@@ -5,6 +5,6 @@
 	path = third_party/imgui
 	url = https://github.com/ocornut/imgui.git
 	branch = docking
-[submodule "Android-project"]
-	path = Android-project
+[submodule "Android_programm"]
+	path = Android_programm
 	url = https://github.com/KBACokk/Android_programm.git

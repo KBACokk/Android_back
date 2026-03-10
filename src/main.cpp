@@ -5,6 +5,7 @@
 #include <fstream>
 #include <mutex>
 #include <vector>
+#include <sstream>
 
 #include <GL/glew.h>
 #include <SDL2/SDL.h>
@@ -25,19 +26,68 @@ std::mutex mtx;
 std::vector<std::string> log_messages;
 bool running = true;
 
-std::string find_value(const std::string& msg, const std::string& key) {
-    std::string search_str = "\"" + key + "\":";
-    size_t start_pos = msg.find(search_str);
-    if (start_pos == std::string::npos) return "";
+void parseArrayData(const std::string& msg) {
+
+    std::string content = msg;
+    if (content.front() == '[') content = content.substr(1);
+    if (content.back() == ']') content.pop_back();
     
-    start_pos += search_str.length();
-    size_t val_start = msg.find_first_not_of(" \"", start_pos);
-    size_t val_end = msg.find_first_of("\",}", val_start);
+    std::vector<std::string> values;
+    std::stringstream ss(content);
+    std::string item;
+    bool inQuotes = false;
+    std::string currentValue;
     
-    if (val_start != std::string::npos && val_end != std::string::npos) {
-        return msg.substr(val_start, val_end - val_start);
+    for (char c : content) {
+        if (c == '"') {
+            inQuotes = !inQuotes;
+            currentValue += c;
+        }
+        else if (c == ',' && !inQuotes) {
+            values.push_back(currentValue);
+            currentValue.clear();
+        }
+        else {
+            currentValue += c;
+        }
     }
-    return "";
+    if (!currentValue.empty()) {
+        values.push_back(currentValue);
+    }
+    
+    for (auto& val : values) {
+        size_t start = val.find_first_not_of(" \t");
+        if (start != std::string::npos) {
+            val = val.substr(start);
+        }
+        size_t end = val.find_last_not_of(" \t");
+        if (end != std::string::npos) {
+            val = val.substr(0, end + 1);
+        }
+    }
+    
+    if (values.size() >= 6) {
+        try {
+            std::string netType = values[5];
+            if (netType.front() == '"') netType = netType.substr(1);
+            if (netType.back() == '"') netType.pop_back();
+            
+            current_telemetry.lat = values[0];
+            current_telemetry.lon = values[1];
+            current_telemetry.alt = values[2];
+            current_telemetry.acc = values[4];  
+            current_telemetry.mobile_data = netType;
+            
+            std::cout << "Parsed - lat: " << values[0] 
+                      << ", lon: " << values[1] 
+                      << ", alt: " << values[2]
+                      << ", acc: " << values[4]
+                      << ", net: " << netType << std::endl;
+        }
+        catch (const std::exception& e) {
+            std::cerr << "Error parsing values: " << e.what() << std::endl;
+        }
+    }
 }
 
 void run_server() {
@@ -66,18 +116,9 @@ void run_server() {
             
             {
                 std::lock_guard<std::mutex> lock(mtx);
-                std::string t_lat = find_value(message, "lat");
-                std::string t_lon = find_value(message, "lon");
-                std::string t_alt = find_value(message, "alt");
-                std::string t_acc = find_value(message, "acc");
-                std::string net_type = find_value(message, "type");
-
-                if (!t_lat.empty()) current_telemetry.lat = t_lat;
-                if (!t_lon.empty()) current_telemetry.lon = t_lon;
-                if (!t_alt.empty()) current_telemetry.alt = t_alt;
-                if (!t_acc.empty()) current_telemetry.acc = t_acc;
-                if (!net_type.empty()) current_telemetry.mobile_data = net_type;
-
+                
+                parseArrayData(message);
+                
                 log_messages.push_back(message);
                 if(log_messages.size() > 500) log_messages.erase(log_messages.begin());
             }
@@ -90,14 +131,27 @@ void run_server() {
 
 void run_gui() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) return;
+    
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    
     SDL_Window* window = SDL_CreateWindow(
-        "ZMQ Log Viewer", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1100, 700, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+        "ZMQ Log Viewer", 
+        SDL_WINDOWPOS_CENTERED, 
+        SDL_WINDOWPOS_CENTERED,
+        1100, 700, 
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     
     SDL_GLContext gl_context = SDL_GL_CreateContext(window);
     SDL_GL_MakeCurrent(window, gl_context);
     SDL_GL_SetSwapInterval(1);
-    glewInit();
+    
+    if (glewInit() != GLEW_OK) {
+        std::cerr << "Failed to initialize GLEW" << std::endl;
+        return;
+    }
 
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -111,38 +165,82 @@ void run_gui() {
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
             if (event.type == SDL_QUIT) running = false;
+            if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE) 
+                running = false;
         }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
+        
         ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
+        
         ImGui::SetNextWindowPos(ImVec2(10, 20), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(320, 220), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(350, 250), ImGuiCond_FirstUseEver);
         ImGui::Begin("Current Telemetry");
-            ImGui::Columns(2, "telemetry_cols", true);
-            ImGui::Text("Latitude:"); ImGui::NextColumn(); ImGui::TextColored(ImVec4(1,1,0,1), "%s", current_telemetry.lat.c_str()); ImGui::NextColumn();
-            ImGui::Text("Longitude:"); ImGui::NextColumn(); ImGui::TextColored(ImVec4(1,1,0,1), "%s", current_telemetry.lon.c_str()); ImGui::NextColumn();
-            ImGui::Text("Altitude:"); ImGui::NextColumn(); ImGui::Text("%s", current_telemetry.alt.c_str()); ImGui::NextColumn();
-            ImGui::Text("Accuracy:"); ImGui::NextColumn(); ImGui::Text("%s", current_telemetry.acc.c_str()); ImGui::NextColumn();
+        
+        TelemetryData local_copy;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            local_copy = current_telemetry;
+        }
+        
+        ImGui::Columns(2, "telemetry_cols", true);
+        
+        ImGui::Text("Latitude:"); 
+        ImGui::NextColumn(); 
+        ImGui::TextColored(ImVec4(1,1,0,1), "%s", local_copy.lat.c_str()); 
+        ImGui::NextColumn();
+        
+        ImGui::Text("Longitude:"); 
+        ImGui::NextColumn(); 
+        ImGui::TextColored(ImVec4(1,1,0,1), "%s", local_copy.lon.c_str()); 
+        ImGui::NextColumn();
+        
+        ImGui::Text("Altitude:"); 
+        ImGui::NextColumn(); 
+        ImGui::Text("%s m", local_copy.alt.c_str()); 
+        ImGui::NextColumn();
+        
+        ImGui::Text("Accuracy:"); 
+        ImGui::NextColumn(); 
+        ImGui::Text("%s m", local_copy.acc.c_str()); 
+        ImGui::NextColumn();
+        
+        ImGui::Separator();
+        
+        ImGui::Text("Network Type:"); 
+        ImGui::NextColumn(); 
+        ImGui::TextColored(ImVec4(0,1,1,1), "%s", local_copy.mobile_data.c_str());
+        
+        ImGui::Columns(1);
+        
+        if (local_copy.lat != "-") {
             ImGui::Separator();
-            ImGui::Text("Network Type:"); ImGui::NextColumn(); ImGui::TextColored(ImVec4(0,1,1,1), "%s", current_telemetry.mobile_data.c_str());
-            ImGui::Columns(1);
+            ImGui::TextColored(ImVec4(0,1,0,1), "✓ Data received");
+        }
+        
         ImGui::End();
-        ImGui::SetNextWindowPos(ImVec2(340, 20), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(740, 660), ImGuiCond_FirstUseEver);
+        
+        ImGui::SetNextWindowPos(ImVec2(370, 20), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(710, 660), ImGuiCond_FirstUseEver);
         ImGui::Begin("ZMQ Server Log");
-            if (ImGui::BeginChild("LogScrollRegion", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar)) {
-                std::lock_guard<std::mutex> lock(mtx);
-                ImGui::PushTextWrapPos(0.0f); 
-                for (const auto& msg : log_messages) {
-                    ImGui::TextUnformatted(msg.c_str());
-                }
-                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
-                    ImGui::SetScrollHereY(1.0f);
-                ImGui::PopTextWrapPos();
+        
+        if (ImGui::BeginChild("LogScrollRegion", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar)) {
+            std::lock_guard<std::mutex> lock(mtx);
+            
+            ImGui::PushTextWrapPos(0.0f); 
+            for (const auto& msg : log_messages) {
+                ImGui::TextUnformatted(msg.c_str());
             }
-            ImGui::EndChild();
+            
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+                ImGui::SetScrollHereY(1.0f);
+                
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::EndChild();
+        
         ImGui::End();
 
         ImGui::Render();
@@ -156,14 +254,23 @@ void run_gui() {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
+    
     SDL_GL_DeleteContext(gl_context);
     SDL_DestroyWindow(window);
     SDL_Quit();
 }
 
 int main(int argc, char *argv[]) {
+    std::cout << "Starting ZMQ Log Viewer..." << std::endl;
+    std::cout << "Waiting for data on port 7777..." << std::endl;
+    
     std::thread server_thread(run_server);
     run_gui();
-    if (server_thread.joinable()) server_thread.join();
+    
+    if (server_thread.joinable()) {
+        running = false;
+        server_thread.join();
+    }
+    
     return 0;
 }
