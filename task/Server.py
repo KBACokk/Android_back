@@ -9,7 +9,6 @@ print("Сервер запущен на порту 7777")
 print("Данные сохраняются в файл:", LOG_FILE)
 print("Нажмите Ctrl+C для остановки\n")
 
-# Создаем сокет
 context = zmq.Context()
 socket = context.socket(zmq.REP)
 socket.bind("tcp://0.0.0.0:7777")
