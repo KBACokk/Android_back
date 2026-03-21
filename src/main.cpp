@@ -5,7 +5,10 @@
 #include <fstream>
 #include <mutex>
 #include <vector>
-#include <sstream>
+#include <cmath>
+
+#include <nlohmann/json.hpp>
+using json = nlohmann::json;
 
 #include <GL/glew.h>
 #include <SDL2/SDL.h>
@@ -18,340 +21,275 @@
 struct SignalHistory {
     std::vector<float> x;
     std::vector<float> y;
-    float current_step = 0;
+
+    double start_time = -1.0;
 
     static constexpr int max_points = 200;
 
-    void add_point(float value) {
+    void add_point(float value, double timestamp_ms) {
+
+        if (start_time < 0)
+            start_time = timestamp_ms;
+
+        double time_sec = (timestamp_ms - start_time) / 1000.0;
+        time_sec = floor(time_sec);
+
         if (x.size() >= max_points) {
             x.erase(x.begin());
             y.erase(y.begin());
         }
 
-        x.push_back(current_step++);
+        x.push_back((float)time_sec);
         y.push_back(value);
     }
 };
 
-struct TelemetryData {
-    std::string lat="-";
-    std::string lon="-";
-    std::string alt="-";
-    std::string acc="-";
-    std::string mobile_data="-";
+struct CellInfo {
+    std::string type;
+    int dbm = -140;
+    int pci = -1;
+    int tac = -1;
+};
 
+struct TelemetryData {
+    std::string lat = "-";
+    std::string lon = "-";
+    std::string acc = "-";
+    std::string mobile_data = "-";
     float signal = -140;
 
+    std::vector<CellInfo> cells;
     SignalHistory history;
 } current_telemetry;
 
 std::mutex mtx;
 std::vector<std::string> log_messages;
 
-bool running=true;
+bool running = true;
+int packet_counter = 0;
 
-int packet_counter=0;
+void parseJsonData(const std::string& msg) {
+    try {
+        auto j = json::parse(msg);
 
-void parseArrayData(const std::string& msg)
-{
-    std::string content = msg;
+        current_telemetry.lat = std::to_string(j.value("lat", 0.0));
+        current_telemetry.lon = std::to_string(j.value("lon", 0.0));
+        current_telemetry.acc = std::to_string(j.value("accuracy", 0.0));
+        current_telemetry.mobile_data = j.value("networkType", "-");
 
-    if(content.front()=='[') content = content.substr(1);
-    if(content.back()==']') content.pop_back();
-
-    std::vector<std::string> values;
-
-    bool inQuotes=false;
-    std::string current;
-
-    for(char c:content)
-    {
-        if(c=='"')
-        {
-            inQuotes=!inQuotes;
+        float signal = j.value("signal", -140.0f);
+        
+        current_telemetry.cells.clear();
+        if (j.contains("cells") && j["cells"].is_array()) {
+            for (auto& c : j["cells"]) {
+                CellInfo cell;
+                cell.type = c.value("type", "unknown");
+                cell.dbm = c.value("dbm", -140);
+                cell.pci = c.value("pci", -1);
+                cell.tac = c.value("tac", -1);
+                current_telemetry.cells.push_back(cell);
+            }
+            
+            if (!current_telemetry.cells.empty()) {
+                signal = (float)current_telemetry.cells[0].dbm;
+            }
         }
-        else if(c==',' && !inQuotes)
-        {
-            values.push_back(current);
-            current.clear();
-        }
-        else
-        {
-            current+=c;
-        }
-    }
-
-    if(!current.empty())
-        values.push_back(current);
-
-    if(values.size() >= 6)
-    {
-        std::string netType = values[5];
-
-        if(netType.front()=='"') netType=netType.substr(1);
-        if(netType.back()=='"') netType.pop_back();
-
-        current_telemetry.lat = values[0];
-        current_telemetry.lon = values[1];
-        current_telemetry.alt = values[2];
-
-        current_telemetry.mobile_data = netType;
-        current_telemetry.acc = "-";
-
-        float signal = -140;
-
-        try
-        {
-            signal = std::stof(values[4]);
-        }
-        catch(...)
-        {
-        }
-
+        
         current_telemetry.signal = signal;
-        current_telemetry.history.add_point(signal);
+        double timestamp = j.value("timestamp", 0.0);
+        current_telemetry.history.add_point(signal, timestamp);
+
+        if (timestamp == 0.0) {
+            timestamp = (double)std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+        ).count();
+}
+
+    } catch (std::exception& e) {
+        std::cerr << "JSON parse error: " << e.what() << std::endl;
     }
 }
 
-
-
-void run_server()
-{
+void run_server() {
     zmq::context_t context(1);
-    zmq::socket_t socket(context,zmq::socket_type::rep);
-
-    socket.set(zmq::sockopt::rcvtimeo,500);
-
-    try{
+    zmq::socket_t socket(context, zmq::socket_type::rep);
+    socket.set(zmq::sockopt::rcvtimeo, 500);
+    try {
         socket.bind("tcp://*:7777");
-        std::cout<<"Server started on 7777\n";
-    }
-    catch(...)
-    {
+    } catch (const zmq::error_t& e) {
+        std::cerr << "ZMQ Bind error: " << e.what() << std::endl;
         return;
     }
 
-    std::ofstream file("data.json",std::ios::app);
+    std::cout << "Server started on 7777\n";
+    std::ofstream file("data.json", std::ios::app);
 
-    while(running)
-    {
+    while (running) {
         zmq::message_t request;
-
-        if(socket.recv(request,zmq::recv_flags::none))
-        {
-            std::string msg(
-                static_cast<char*>(request.data()),
-                request.size()
-            );
-
-            file<<msg<<"\n";
+        if (socket.recv(request, zmq::recv_flags::none)) {
+            std::string msg(static_cast<char*>(request.data()), request.size());
+            file << msg << std::endl;
 
             {
                 std::lock_guard<std::mutex> lock(mtx);
-
-                parseArrayData(msg);
-
+                parseJsonData(msg);
                 log_messages.push_back(msg);
-
-                if(log_messages.size()>500)
-                    log_messages.erase(log_messages.begin());
+                if (log_messages.size() > 500) log_messages.erase(log_messages.begin());
+                packet_counter++;
             }
-
-            packet_counter++;
-
-            socket.send(zmq::buffer("OK"),zmq::send_flags::none);
+            socket.send(zmq::buffer("Ok"), zmq::send_flags::none);
         }
     }
 }
 
+static int TimeFormatter(double value, char* buff, int size, void* user_data) {
+    int total_seconds = (int)value;
 
+    int hours = total_seconds / 3600;
+    int minutes = (total_seconds % 3600) / 60;
+    int seconds = total_seconds % 60;
 
-void run_gui()
-{
-    if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_TIMER)!=0)
-        return;
+    if (hours > 0)
+        snprintf(buff, size, "%02d:%02d:%02d", hours, minutes, seconds);
+    else
+        snprintf(buff, size, "%02d:%02d", minutes, seconds);
 
-    SDL_Window* window=SDL_CreateWindow(
-        "Telemetry backend server",
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
-        1200,
-        750,
-        SDL_WINDOW_OPENGL|SDL_WINDOW_RESIZABLE
+    return 0;
+}
+
+void run_gui() {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) return;
+
+    SDL_Window* window = SDL_CreateWindow(
+        "Telemetry backend server", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        1200, 750, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE
     );
 
-    SDL_GLContext gl_context=SDL_GL_CreateContext(window);
-
+    SDL_GLContext gl_context = SDL_GL_CreateContext(window);
     glewInit();
 
     ImGui::CreateContext();
     ImPlot::CreateContext();
-
-    ImGui_ImplSDL2_InitForOpenGL(window,gl_context);
+    ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
     ImGui_ImplOpenGL3_Init("#version 330");
 
-
-
-    while(running)
-    {
+    while (running) {
         SDL_Event event;
-
-        while(SDL_PollEvent(&event))
-        {
+        while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
-
-            if(event.type==SDL_QUIT)
-                running=false;
+            if (event.type == SDL_QUIT) running = false;
         }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
-
-
-        TelemetryData data_copy;
+        std::string lat, lon, acc, net;
+        float sig;
+        std::vector<CellInfo> cells_copy;
+        int p_count;
 
         {
             std::lock_guard<std::mutex> lock(mtx);
-            data_copy=current_telemetry;
+            lat = current_telemetry.lat;
+            lon = current_telemetry.lon;
+            acc = current_telemetry.acc;
+            net = current_telemetry.mobile_data;
+            sig = current_telemetry.signal;
+            cells_copy = current_telemetry.cells;
+            p_count = packet_counter;
         }
-
-
 
         ImGui::Begin("Current Telemetry");
-
-        ImGui::Columns(2);
-
-        ImGui::Text("Latitude"); ImGui::NextColumn();
-        ImGui::Text("%s",data_copy.lat.c_str()); ImGui::NextColumn();
-
-        ImGui::Text("Longitude"); ImGui::NextColumn();
-        ImGui::Text("%s",data_copy.lon.c_str()); ImGui::NextColumn();
-
-        ImGui::Text("Altitude"); ImGui::NextColumn();
-        ImGui::Text("%s",data_copy.alt.c_str()); ImGui::NextColumn();
-
-        ImGui::Text("Accuracy"); ImGui::NextColumn();
-        ImGui::Text("%s",data_copy.acc.c_str()); ImGui::NextColumn();
-
-        ImGui::Text("Network"); ImGui::NextColumn();
-        ImGui::Text("%s",data_copy.mobile_data.c_str());
-
-        ImGui::Columns(1);
-
+        ImGui::Text("Lat: %s", lat.c_str());
+        ImGui::Text("Lon: %s", lon.c_str());
+        ImGui::Text("Accuracy: %s", acc.c_str());
+        ImGui::Text("Network: %s", net.c_str());
+        ImGui::TextColored(ImVec4(0, 1, 0, 1), "Signal: %.1f dBm", sig);
         ImGui::Separator();
-
-        ImGui::Text("Packets received: %d",packet_counter);
-
+        ImGui::Text("Cells:");
+        // for (const auto& c : cells_copy) {
+        //     ImGui::BulletText("%s | %d dBm | PCI:%d | TAC:%d", c.type.c_str(), c.dbm, c.pci, c.tac);
+        // }
+        ImGui::Separator();
+        ImGui::Text("Total Packets: %d", p_count);
         ImGui::End();
 
+        ImGui::Begin("Signal Graph");
+{
+    std::lock_guard<std::mutex> lock(mtx); 
+    if (ImPlot::BeginPlot("Signal History", ImVec2(-1, -1))) {
+        
+        ImPlot::SetupAxes("Time", "Signal (dBm)", ImPlotAxisFlags_AutoFit, 0); 
+        ImPlot::SetupAxisFormat(ImAxis_X1, TimeFormatter, nullptr);
 
+        if (!current_telemetry.history.y.empty()) {
 
-        ImGui::Begin(" Graph");
-
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-
-            if (ImPlot::BeginPlot("Signal History", ImVec2(-1, 300)))
-            {
-                ImPlot::SetupAxes("Samples", "Signal (dBm)");
-
-                int count = current_telemetry.history.x.size();
-
-                if (count > 0)
-                {
-                    float* xs = current_telemetry.history.x.data();
-                    float* ys = current_telemetry.history.y.data();
-
-                    float x_max = xs[count - 1];
-                    float x_min = x_max - 100.0f;
-                    if (x_min < 0) x_min = 0;
-
-                    float y_min = ys[0];
-                    float y_max = ys[0];
-
-                    for (int i = 1; i < count; i++)
-                    {
-                        if (ys[i] < y_min) y_min = ys[i];
-                        if (ys[i] > y_max) y_max = ys[i];
-                    }
-
-                    y_min -= 5;
-                    y_max += 5;
-
-                    ImPlot::SetupAxisLimits(ImAxis_X1, x_min, x_max, ImGuiCond_Always);
-                    ImPlot::SetupAxisLimits(ImAxis_Y1, y_min, y_max, ImGuiCond_Always);
-
-                    ImPlot::PlotLine(
-                        "Signal",
-                        xs,
-                        ys,
-                        count
-                    );
-                }
-
-                ImPlot::EndPlot();
+            float min_y = current_telemetry.history.y[0];
+            float max_y = current_telemetry.history.y[0];
+            
+            for (float val : current_telemetry.history.y) {
+                if (val < min_y) min_y = val;
+                if (val > max_y) max_y = val;
             }
+
+
+            float range = max_y - min_y;
+            if (range < 1.0f) range = 10.0f; 
+
+            float padding = range * 0.15f; 
+            ImPlot::SetupAxisLimits(ImAxis_Y1, min_y - padding, max_y + padding, ImGuiCond_Always);
+            
+            ImPlot::PlotLine("Signal", 
+                current_telemetry.history.x.data(), 
+                current_telemetry.history.y.data(), 
+                (int)current_telemetry.history.x.size());
+        } else {
+            ImPlot::SetupAxisLimits(ImAxis_Y1, -130, -40, ImGuiCond_Once);
         }
 
-        ImGui::End();
+        ImPlot::EndPlot();
+    }
+}
+ImGui::End();    
 
-
-
-        ImGui::Begin(" Logs");
-
-        if(ImGui::BeginChild("log"))
-        {
+        ImGui::Begin("Logs");
+        if (ImGui::BeginChild("LogScroll")) {
             std::lock_guard<std::mutex> lock(mtx);
-
-            for(const auto& msg:log_messages)
+            for (const auto& msg : log_messages) {
                 ImGui::TextUnformatted(msg.c_str());
-
-            if(ImGui::GetScrollY()>=ImGui::GetScrollMaxY())
+            }
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
                 ImGui::SetScrollHereY(1.0f);
         }
-
         ImGui::EndChild();
-
         ImGui::End();
 
-
-
         ImGui::Render();
-
-        glViewport(0,0,1200,750);
-
-        glClearColor(0.1f,0.12f,0.15f,1.0f);
+        int w, h;
+        SDL_GetWindowSize(window, &w, &h);
+        glViewport(0, 0, w, h);
+        glClearColor(0.1f, 0.12f, 0.15f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
-
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
         SDL_GL_SwapWindow(window);
     }
 
-
-
     ImPlot::DestroyContext();
-
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
-
+    SDL_GL_DeleteContext(gl_context);
+    SDL_DestroyWindow(window);
     SDL_Quit();
 }
 
-
-
-int main()
-{
-    std::thread server(run_server);
-
+int main() {
+    std::thread server_thread(run_server);
     run_gui();
-
-    running=false;
-
-    server.join();
-
+    
+    running = false;
+    if (server_thread.joinable()) server_thread.join();
+    
     return 0;
 }
