@@ -6,18 +6,15 @@ set(CMAKE_CXX_STANDARD 17)
 set(THIRD_PARTY_DIR ${PROJECT_SOURCE_DIR}/third_party)
 set(SRC_DIR ${PROJECT_SOURCE_DIR}/src)
 
-# Принудительно указываем пути к Linux библиотекам
 set(GLEW_INCLUDE_DIR "/usr/include")
 set(GLEW_LIBRARY "/usr/lib/x86_64-linux-gnu/libGLEW.so")
 set(SDL2_INCLUDE_DIR "/usr/include/SDL2")
 set(SDL2_LIBRARY "/usr/lib/x86_64-linux-gnu/libSDL2.so")
 set(OPENGL_LIBRARY "/usr/lib/x86_64-linux-gnu/libOpenGL.so")
 
-# ZeroMQ
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ZMQ REQUIRED libzmq)
 
-# ImGui
 add_library(imgui STATIC
     ${THIRD_PARTY_DIR}/imgui/imgui.cpp
     ${THIRD_PARTY_DIR}/imgui/imgui_draw.cpp
@@ -34,7 +31,6 @@ target_include_directories(imgui PUBLIC
     ${GLEW_INCLUDE_DIR}
 )
 
-# ImPlot
 add_library(implot STATIC
     ${THIRD_PARTY_DIR}/implot/implot.cpp
     ${THIRD_PARTY_DIR}/implot/implot_demo.cpp
@@ -44,7 +40,6 @@ add_library(implot STATIC
 target_include_directories(implot PUBLIC ${THIRD_PARTY_DIR}/implot)
 target_link_libraries(implot PRIVATE imgui)
 
-# Main executable
 add_executable(main ${SRC_DIR}/main.cpp)
 target_include_directories(main PRIVATE
     ${THIRD_PARTY_DIR}/imgui
