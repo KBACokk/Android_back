@@ -1,0 +1,7 @@
+#pragma once
+
+/** Каталог PNG тепловой карты (рядом с network_analyzer, подпапка heatmap). */
+#define HEATMAP_CACHE_ROOT "@HEATMAP_CACHE_ROOT@"
+
+/** Корень исходников проекта. */
+#define PROJECT_SOURCE_ROOT "@PROJECT_SOURCE_ROOT@"
