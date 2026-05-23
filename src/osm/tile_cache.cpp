@@ -15,6 +15,7 @@ bool tile_read_file_bytes(const std::filesystem::path& path, std::vector<unsigne
     return static_cast<bool>(f);
 }
 
+
 bool tile_write_file_bytes(const std::filesystem::path& path, const unsigned char* data, std::size_t len) {
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);

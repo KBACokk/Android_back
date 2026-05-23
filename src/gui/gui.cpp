@@ -33,7 +33,7 @@ void run_gui() {
 
     SDL_Window* window = SDL_CreateWindow(
         "Telemetry backend server", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1200, 750, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE
+        1640, 980, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE
     );
     if (!window) {
         std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << "\n";

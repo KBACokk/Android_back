@@ -69,3 +69,9 @@ struct HeatmapTileQuad {
 };
 
 int heatmap_collect_view_quads(int zoom, int tile_x, int tile_y, HeatmapTileQuad* out_quads, int max_quads);
+
+void heatmap_palette_rgb(float t, unsigned char& r, unsigned char& g, unsigned char& b);
+
+void heatmap_get_value_range(float& vmin, float& vmax);
+const char* heatmap_criterion_short_name(HeatmapCriterion c);
+const char* heatmap_criterion_unit(HeatmapCriterion c);

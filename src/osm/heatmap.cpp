@@ -16,6 +16,8 @@
 #include <thread>
 #include <future>
 
+void heatmap_palette_rgb(float t, unsigned char& r, unsigned char& g, unsigned char& b);
+
 namespace {
 constexpr int kTilePx = 256;
 constexpr int kSplatRadiusPx = 20;
@@ -28,6 +30,8 @@ HeatmapJobState g_job;
 HeatmapCriterion g_criterion = HeatmapCriterion::RSRP;
 int g_earfcn = -1;
 bool g_layer_enabled = true;
+float g_vmin = -110.0f;
+float g_vmax = -80.0f;
 
 std::vector<HeatmapSample> g_samples;
 std::vector<int> g_earfcns;
@@ -40,17 +44,7 @@ std::mutex g_gpu_mtx;
 std::unordered_map<std::string, GpuHeatTile> g_gpu_tiles;
 
 void heatmap_palette(float t, unsigned char& r, unsigned char& g, unsigned char& b, unsigned char& a) {
-    t = std::clamp(t, 0.0f, 1.0f);
-    float stops[5][3] = {
-        {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}
-    };
-    float x = t * 4.0f;
-    int seg = std::min(3, static_cast<int>(x));
-    float u = x - static_cast<float>(seg);
-
-    r = static_cast<unsigned char>((stops[seg][0] + (stops[seg+1][0] - stops[seg][0]) * u) * 255.f);
-    g = static_cast<unsigned char>((stops[seg][1] + (stops[seg+1][1] - stops[seg][1]) * u) * 255.f);
-    b = static_cast<unsigned char>((stops[seg][2] + (stops[seg+1][2] - stops[seg][2]) * u) * 255.f);
+    heatmap_palette_rgb(t, r, g, b);
     a = static_cast<unsigned char>((0.1f + t * 0.5f) * 255.f);
 }
 
@@ -164,6 +158,11 @@ void generate_layer(HeatmapCriterion c, int earfcn) {
 
     float vmin, vmax;
     compute_value_range(c, earfcn, vmin, vmax);
+    {
+        std::lock_guard<std::mutex> lk(g_state_mtx);
+        g_vmin = vmin;
+        g_vmax = vmax;
+    }
 
     std::vector<std::tuple<int, int, int>> active_tiles;
     for (const auto& s : g_samples) {
@@ -195,6 +194,20 @@ void clear_gpu_cache() {
     for (auto& e : g_gpu_tiles) e.second.tex.destroy();
     g_gpu_tiles.clear();
 }
+}
+
+void heatmap_palette_rgb(float t, unsigned char& r, unsigned char& g, unsigned char& b) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    float stops[5][3] = {
+        {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}
+    };
+    float x = t * 4.0f;
+    int seg = std::min(3, static_cast<int>(x));
+    float u = x - static_cast<float>(seg);
+
+    r = static_cast<unsigned char>((stops[seg][0] + (stops[seg+1][0] - stops[seg][0]) * u) * 255.f);
+    g = static_cast<unsigned char>((stops[seg][1] + (stops[seg+1][1] - stops[seg][1]) * u) * 255.f);
+    b = static_cast<unsigned char>((stops[seg][2] + (stops[seg+1][2] - stops[seg][2]) * u) * 255.f);
 }
 
 void heatmap_set_build_root(const std::filesystem::path& root) { g_build_root = std::filesystem::absolute(root); }
@@ -269,6 +282,25 @@ bool heatmap_try_get_texture(int zoom, int tile_x, int tile_y, unsigned int& out
     }
     g_gpu_tiles[key] = {};
     return false;
+}
+
+void heatmap_get_value_range(float& vmin, float& vmax) {
+    std::lock_guard<std::mutex> lk(g_state_mtx);
+    vmin = g_vmin;
+    vmax = g_vmax;
+}
+
+const char* heatmap_criterion_short_name(HeatmapCriterion c) {
+    if (c == HeatmapCriterion::RSRQ) return "RSRQ";
+    if (c == HeatmapCriterion::RSSI) return "RSSI";
+    if (c == HeatmapCriterion::Altitude) return "Altitude";
+    return "RSRP";
+}
+
+const char* heatmap_criterion_unit(HeatmapCriterion c) {
+    if (c == HeatmapCriterion::Altitude) return "m";
+    if (c == HeatmapCriterion::RSRQ) return "dB";
+    return "dBm";
 }
 
 int heatmap_collect_view_quads(int zoom, int tile_x, int tile_y, HeatmapTileQuad* out_quads, int max_quads) {

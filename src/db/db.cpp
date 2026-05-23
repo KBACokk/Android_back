@@ -409,9 +409,9 @@ std::vector<HeatmapSample> loadHeatmapSamplesFromDatabase(PGconn* db) {
         "  SELECT m.lat, m.lon, COALESCE(m.accuracy, 0)::real, "
         "    gsm.dbm::real, NULL::real, gsm.rssi::real, gsm.arfcn "
         "  FROM measurements m INNER JOIN cell_info_gsm gsm ON m.id = gsm.measurement_id "
-        ") cells WHERE lat IS NOT NULL AND lon IS NOT NULL "
+        ") "
         "ORDER BY lat, lon "
-        "LIMIT 40000";
+        "LIMIT 100000";
 
     PGresult* res = PQexec(db, query);
     if (PQresultStatus(res) != PGRES_TUPLES_OK) {
