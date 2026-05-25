@@ -5,10 +5,10 @@
 ## Архитектура
 
 - **Android-клиент** (Kotlin) - сбор GPS, данных сотовых вышек и уровня сигнала, отправка на сервер через ZeroMQ
-[https://github.com/KBACokk/Android_back]
+[https://github.com/KBACokk/Android_programm]
 
 - **Серверный бэкенд** (C++) - приём телеметрии, сохранение в файл, визуализация через ImGui/ImPlot
-[https://github.com/KBACokk/Android_programm]
+[https://github.com/KBACokk/Android_back]
 
 ## Общая архитектура проекта взаимодействия Android user и Back server.
 
