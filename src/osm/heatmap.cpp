@@ -317,3 +317,4 @@ int heatmap_collect_view_quads(int zoom, int tile_x, int tile_y, HeatmapTileQuad
     out_quads[0].bounds_max_y = osm::tile_y_to_mercator_y(tile_y, zoom);
     return 1;
 }
+
